@@ -46,6 +46,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.*;
 
 
 @DefaultProperty("children")
@@ -71,6 +72,7 @@ public class AreaHeatMap extends Region {
     private static final double                       MINIMUM_HEIGHT   = 50;
     private static final double                       MAXIMUM_WIDTH    = 1024;
     private static final double                       MAXIMUM_HEIGHT   = 1024;
+    private static final int                          ROW_CHUNK = 75;
     private              double                       size;
     private              double                       width;
     private              double                       height;
@@ -404,26 +406,30 @@ public class AreaHeatMap extends Region {
         }
     }
 
-    private void draw(final int LIMIT, final double RESOLUTION) {
+    private Callable<Void> draw(final int startRow, final int LIMIT, final double RESOLUTION) {
         int limit        = LIMIT > points.size() ? points.size() : LIMIT + 1;
         double pixelSize = 2 * RESOLUTION;
 
-        ctx.clearRect(0, 0, width, height);
+        ctx.clearRect(0, startRow, width, startRow + ROW_CHUNK);
 
-        for (double y = 0 ; y < height ; y += RESOLUTION) {
+        for (double y = startRow ; y < startRow + ROW_CHUNK ; y += RESOLUTION) {
             for (double x = 0 ; x < width ; x += RESOLUTION) {
-                double value = getValueAt(limit, x, y);
-                if (value != -255) {
-                    Color          color    = getUseColorMapping() ? getColorForValue(value) : getColorForValue(value, isDiscreteColors());
-                    RadialGradient gradient = new RadialGradient(0, 0, x, y, RESOLUTION,
-                                                                 false, CycleMethod.NO_CYCLE,
-                                                                 new Stop(0, Color.color(color.getRed(), color.getGreen(), color.getBlue(), getHeatMapOpacity())),
-                                                                 new Stop(1, Color.color(color.getRed(), color.getGreen(), color.getBlue(), 0.0)));
-                    ctx.setFill(gradient);
-                    ctx.fillOval(x - RESOLUTION, y - RESOLUTION, pixelSize, pixelSize);
+                if (Helper.isInPolygon(x, y, polygon)) {
+
+                    double value = getValueAt(limit, x, y);
+                    if (value != -255) {
+                        Color          color    = getUseColorMapping() ? getColorForValue(value) : getColorForValue(value, isDiscreteColors());
+                        RadialGradient gradient = new RadialGradient(0, 0, x, y, RESOLUTION,
+                                                                     false, CycleMethod.NO_CYCLE,
+                                                                     new Stop(0, Color.color(color.getRed(), color.getGreen(), color.getBlue(), getHeatMapOpacity())),
+                                                                     new Stop(1, Color.color(color.getRed(), color.getGreen(), color.getBlue(), 0.0)));
+                        ctx.setFill(gradient);
+                        ctx.fillOval(x - RESOLUTION, y - RESOLUTION, pixelSize, pixelSize);
+                    }
                 }
             }
         }
+        return null;
     }
 
     private void drawDataPoints() {
@@ -462,8 +468,18 @@ public class AreaHeatMap extends Region {
         }
     }
 
-    private void redraw() {
-        draw(getNoOfCloserInfluentPoints(), getQuality());
+    private void redraw()  {
+        List<Future<Void>> listOfFutures = new ArrayList<>();
+        ExecutorService executor = Executors.newFixedThreadPool(10);
+        List<Callable<Void>> tasks = new ArrayList<>();
+        double doubleNumber = (height / ROW_CHUNK);
+        int intPart = (int) doubleNumber;
+        int iterator = (doubleNumber - intPart > 0) ? intPart + 1 : intPart;
+
+        for (int j = 0; j < iterator; j++) {
+            tasks.add(draw(j * ROW_CHUNK, getNoOfCloserInfluentPoints(), getQuality())
+            );
+        }
         if (getShowDataPoints()) { drawDataPoints(); }
     }
 }
