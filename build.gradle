@@ -124,14 +124,14 @@ artifacts {
     archives sourcesJar
 }
 
-signing {
-    if (gpgkey && gpgpassphrase) {
-        useInMemoryPgpKeys(gpgkey, gpgpassphrase)
-    }
-
-    sign configurations.archives
-    sign publishing.publications
-}
+//signing {
+//    if (gpgkey && gpgpassphrase) {
+//        useInMemoryPgpKeys(gpgkey, gpgpassphrase)
+//    }
+//
+//    sign configurations.archives
+//    sign publishing.publications
+//}
 
 // Remove 'thirdPartyCompatibility' from JavaFX runtimeElements variant
 // Otherwise it locks Gradle Module Metadata (GMM) to the publishing OS
@@ -154,7 +154,7 @@ tasks.withType(GenerateModuleMetadata).configureEach {
 publishing {
     publications {
         mavenCustom(MavenPublication) {
-            group      = 'eu.hansolo.fx'
+            group      = 'hu.palatinnet'
             artifactId = 'charts'
             version    = "${version}"
 
