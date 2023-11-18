@@ -21,6 +21,7 @@ import eu.hansolo.toolboxfx.font.Fonts;
 import eu.hansolo.fx.charts.tools.Helper;
 import eu.hansolo.fx.heatmap.ColorMapping;
 import eu.hansolo.fx.heatmap.Mapping;
+import javafx.application.Platform;
 import javafx.beans.DefaultProperty;
 import javafx.beans.property.BooleanProperty;
 import javafx.beans.property.BooleanPropertyBase;
@@ -31,7 +32,6 @@ import javafx.beans.property.IntegerPropertyBase;
 import javafx.beans.property.ObjectProperty;
 import javafx.beans.property.ObjectPropertyBase;
 import javafx.collections.ObservableList;
-import javafx.concurrent.Task;
 import javafx.geometry.VPos;
 import javafx.scene.Node;
 import javafx.scene.canvas.Canvas;
@@ -43,14 +43,10 @@ import javafx.scene.paint.RadialGradient;
 import javafx.scene.paint.Stop;
 import javafx.scene.text.TextAlignment;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.List;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.*;
+import java.util.concurrent.*;
 
 
 @DefaultProperty("children")
@@ -408,30 +404,76 @@ public class AreaHeatMap extends Region {
         }
     }
 
-    private Callable<Void> draw(final int startRow, final int LIMIT, final double RESOLUTION) {
+    public void draw(final int LIMIT, final double RESOLUTION) {
         int limit        = LIMIT > points.size() ? points.size() : LIMIT + 1;
         double pixelSize = 2 * RESOLUTION;
+        double doubleNumber = (height / ROW_CHUNK);
+        int intPart = (int) doubleNumber;
+        int iterator = (doubleNumber - intPart > 0) ? intPart + 1 : intPart;
+        List<Callable<Boolean>> tasks = new ArrayList<>();
 
-        ctx.clearRect(0, startRow, width, startRow + ROW_CHUNK);
+        for (int i = 0; i < iterator; i++) {
+            int startRow = i * ROW_CHUNK;
+            System.out.println("adding task " + i + " start row " + startRow);
+            tasks.add(new Callable<Boolean>() {
+                @Override
+                public Boolean call() throws Exception {
+                    try {
+                        var start = Instant.now();
+                        System.out.println("starting calculation");
+                        ctx.clearRect(0, startRow, width, startRow + ROW_CHUNK);
+                        for (double y = startRow ; y < startRow + ROW_CHUNK ; y += RESOLUTION) {
+                            for (double x = 0 ; x < width ; x += RESOLUTION) {
+                                if (Helper.isInPolygon(x, y, polygon)) {
 
-        for (double y = startRow ; y < startRow + ROW_CHUNK ; y += RESOLUTION) {
-            for (double x = 0 ; x < width ; x += RESOLUTION) {
-                if (Helper.isInPolygon(x, y, polygon)) {
-
-                    double value = getValueAt(limit, x, y);
-                    if (value != -255) {
-                        Color          color    = getUseColorMapping() ? getColorForValue(value) : getColorForValue(value, isDiscreteColors());
-                        RadialGradient gradient = new RadialGradient(0, 0, x, y, RESOLUTION,
-                                false, CycleMethod.NO_CYCLE,
-                                new Stop(0, Color.color(color.getRed(), color.getGreen(), color.getBlue(), getHeatMapOpacity())),
-                                new Stop(1, Color.color(color.getRed(), color.getGreen(), color.getBlue(), 0.0)));
-                        ctx.setFill(gradient);
-                        ctx.fillOval(x - RESOLUTION, y - RESOLUTION, pixelSize, pixelSize);
+                                    double value = getValueAt(limit, x, y);
+                                    if (value != -255) {
+                                        Color          color    = getUseColorMapping() ? getColorForValue(value) : getColorForValue(value, isDiscreteColors());
+                                        RadialGradient gradient = new RadialGradient(0, 0, x, y, RESOLUTION,
+                                                false, CycleMethod.NO_CYCLE,
+                                                new Stop(0, Color.color(color.getRed(), color.getGreen(), color.getBlue(), getHeatMapOpacity())),
+                                                new Stop(1, Color.color(color.getRed(), color.getGreen(), color.getBlue(), 0.0)));
+                                        ctx.setFill(gradient);
+                                        ctx.fillOval(x - RESOLUTION, y - RESOLUTION, pixelSize, pixelSize);
+                                    }
+                                }
+                            }
+                        }
+                        System.out.println("calculation ended");
+                        var end = Instant.now();
+                        System.out.println("Start row: " + startRow + " Finished row: " + (startRow + ROW_CHUNK) +" iteration: " + startRow / 75 + " elapsed time: " + Duration.between(start, end).toSeconds());
+                        return true;
+                    } catch (Exception e) {
+                        return false;
                     }
                 }
-            }
+            });
         }
-        return null;
+
+        List<Future<Boolean>> listOfFutures = new ArrayList<>();
+        ExecutorService pool = Executors.newFixedThreadPool(15);
+        List<Boolean> result = new ArrayList<>();
+        try {
+            listOfFutures.clear();
+            listOfFutures = pool.invokeAll(tasks);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+        pool.shutdown();
+        try {
+            if (!pool.awaitTermination(800, TimeUnit.MILLISECONDS)) {
+                pool.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            pool.shutdownNow();
+        }
+        listOfFutures.forEach(future -> {
+            try {
+                result.add(future.get());
+            } catch (InterruptedException | ExecutionException e) {
+                e.printStackTrace();
+            }
+        });
     }
 
     private void drawDataPoints() {
@@ -470,25 +512,13 @@ public class AreaHeatMap extends Region {
         }
     }
 
-    private void redraw()  {
-        List<Callable<Void>> tasks = new ArrayList<>();
-        double doubleNumber = (height / ROW_CHUNK);
-        int intPart = (int) doubleNumber;
-        int iterator = (doubleNumber - intPart > 0) ? intPart + 1 : intPart;
-
-        for (int j = 0; j < iterator; j++) {
-            tasks.add(draw(j * ROW_CHUNK, getNoOfCloserInfluentPoints(), getQuality()));
-        }
-
-        for (int i = 0; i < tasks.size(); i++) {
-            try {
-                if (tasks.get(i) != null) {
-                    tasks.get(i).call();
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
+    private void redraw() {
+        Platform.runLater(new Runnable() {
+            @Override
+            public void run() {
+                draw(getNoOfCloserInfluentPoints(), getQuality());
             }
-        }
+        });
         if (getShowDataPoints()) { drawDataPoints(); }
     }
 }
