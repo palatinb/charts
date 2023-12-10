@@ -38,13 +38,8 @@ import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.layout.Region;
 import javafx.scene.paint.Color;
-import javafx.scene.paint.CycleMethod;
-import javafx.scene.paint.RadialGradient;
-import javafx.scene.paint.Stop;
 import javafx.scene.text.TextAlignment;
 
-import java.time.Duration;
-import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -380,100 +375,75 @@ public class AreaHeatMap extends Region {
         }
     }
 
-    private double getValueAt(final int LIMIT, final double X , final double Y) {
-        List<Number[]> arr = new ArrayList<>();
-        double         t   = 0.0;
-        double         b   = 0.0;
-        if(Helper.isInPolygon(X, Y, polygon)) {
-            for (int counter = 0 ; counter < points.size() ; counter++) {
-                DataPoint point = points.get(counter);
-                double distance = Helper.squareDistance(X, Y, point.getX(), point.getY());
-                if (Double.compare(distance, 0) == 0) { return point.getValue(); }
-                arr.add(counter, new Number[] { distance, counter });
-            }
-            arr.sort(Comparator.comparingInt(n -> n[0].intValue()));
-            for (int counter = 0 ; counter < LIMIT ; counter++) {
-                Number[] ptr = arr.get(counter);
-                double inv = 1 / Math.pow(ptr[0].intValue(), 2);
-                t = t + inv * points.get(ptr[1].intValue()).getValue();
-                b = b + inv;
-            }
-            return t / b;
-        } else {
-            return -255;
-        }
-    }
+//    private double getValueAt(final int LIMIT, final double X , final double Y) {
+//        List<Number[]> arr = new ArrayList<>();
+//        double         t   = 0.0;
+//        double         b   = 0.0;
+//        if(Helper.isInPolygon(X, Y, polygon)) {
+//            for (int counter = 0 ; counter < points.size() ; counter++) {
+//                DataPoint point = points.get(counter);
+//                double distance = Helper.squareDistance(X, Y, point.getX(), point.getY());
+//                if (Double.compare(distance, 0) == 0) { return point.getValue(); }
+//                arr.add(counter, new Number[] { distance, counter });
+//            }
+//            arr.sort(Comparator.comparingInt(n -> n[0].intValue()));
+//            for (int counter = 0 ; counter < LIMIT ; counter++) {
+//                Number[] ptr = arr.get(counter);
+//                double inv = 1 / Math.pow(ptr[0].intValue(), 2);
+//                t = t + inv * points.get(ptr[1].intValue()).getValue();
+//                b = b + inv;
+//            }
+//            return t / b;
+//        } else {
+//            return -255;
+//        }
+//    }
 
     public void draw(final int LIMIT, final double RESOLUTION) {
-        int limit        = LIMIT > points.size() ? points.size() : LIMIT + 1;
-        double pixelSize = 2 * RESOLUTION;
         double doubleNumber = (height / ROW_CHUNK);
         int intPart = (int) doubleNumber;
         int iterator = (doubleNumber - intPart > 0) ? intPart + 1 : intPart;
-        List<Callable<Boolean>> tasks = new ArrayList<>();
+        List<Callable<Canvas>> tasks = new ArrayList<>();
 
         for (int i = 0; i < iterator; i++) {
             int startRow = i * ROW_CHUNK;
             System.out.println("adding task " + i + " start row " + startRow);
-            tasks.add(new Callable<Boolean>() {
-                @Override
-                public Boolean call() throws Exception {
-                    try {
-                        var start = Instant.now();
-                        System.out.println("starting calculation");
-                        ctx.clearRect(0, startRow, width, startRow + ROW_CHUNK);
-                        for (double y = startRow ; y < startRow + ROW_CHUNK ; y += RESOLUTION) {
-                            for (double x = 0 ; x < width ; x += RESOLUTION) {
-                                if (Helper.isInPolygon(x, y, polygon)) {
-
-                                    double value = getValueAt(limit, x, y);
-                                    if (value != -255) {
-                                        Color          color    = getUseColorMapping() ? getColorForValue(value) : getColorForValue(value, isDiscreteColors());
-                                        RadialGradient gradient = new RadialGradient(0, 0, x, y, RESOLUTION,
-                                                false, CycleMethod.NO_CYCLE,
-                                                new Stop(0, Color.color(color.getRed(), color.getGreen(), color.getBlue(), getHeatMapOpacity())),
-                                                new Stop(1, Color.color(color.getRed(), color.getGreen(), color.getBlue(), 0.0)));
-                                        ctx.setFill(gradient);
-                                        ctx.fillOval(x - RESOLUTION, y - RESOLUTION, pixelSize, pixelSize);
-                                    }
-                                }
-                            }
-                        }
-                        System.out.println("calculation ended");
-                        var end = Instant.now();
-                        System.out.println("Start row: " + startRow + " Finished row: " + (startRow + ROW_CHUNK) +" iteration: " + startRow / 75 + " elapsed time: " + Duration.between(start, end).toSeconds());
-                        return true;
-                    } catch (Exception e) {
-                        return false;
-                    }
-                }
-            });
+            tasks.add(
+                    new DrawTask(startRow, width, height, ROW_CHUNK, polygon, LIMIT, RESOLUTION, points, getHeatMapOpacity(), getUseColorMapping(), isDiscreteColors())
+            );
         }
 
-        List<Future<Boolean>> listOfFutures = new ArrayList<>();
+        List<Future<Canvas>> listOfFutures = new ArrayList<>();
         ExecutorService pool = Executors.newFixedThreadPool(15);
-        List<Boolean> result = new ArrayList<>();
         try {
-            listOfFutures.clear();
-            listOfFutures = pool.invokeAll(tasks);
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
-        }
-        pool.shutdown();
-        try {
-            if (!pool.awaitTermination(800, TimeUnit.MILLISECONDS)) {
-                pool.shutdownNow();
+            if (!tasks.isEmpty()) {
+                listOfFutures = pool.invokeAll(tasks);
             }
         } catch (InterruptedException e) {
-            pool.shutdownNow();
+            throw new RuntimeException(e);
+        } finally {
+            pool.shutdown(); // Shutdown after tasks are submitted
         }
+        try {
+            // Wait for the tasks to complete before moving on
+            pool.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+        } catch (InterruptedException e) {
+            pool.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+
+        Canvas combinedCanvas = new Canvas(width, height);
+        GraphicsContext combinedGC = combinedCanvas.getGraphicsContext2D();
+
         listOfFutures.forEach(future -> {
             try {
-                result.add(future.get());
+                combinedGC.drawImage(future.get().snapshot(null, null), 0, 0);
             } catch (InterruptedException | ExecutionException e) {
                 e.printStackTrace();
             }
         });
+        ctx.drawImage(combinedCanvas.snapshot(null, null), 0, 0);
+
     }
 
     private void drawDataPoints() {
